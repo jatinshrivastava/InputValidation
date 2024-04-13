@@ -1,16 +1,12 @@
-'''References
-1) https://fastapi.tiangolo.com/
-2) https://github.com/sumanentc/python-sample-FastAPI-application
-3) https://dassum.medium.com/building-rest-apis-using-fastapi-sqlalchemy-uvicorn-8a163ccf3aa1
-'''
-# Import the required modules
 from fastapi import Depends, FastAPI, HTTPException, status
+from flask_sqlalchemy.session import Session
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from typing import Annotated, Optional
+from typing import Annotated, Optional, List
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from datetime import datetime
 
 fake_users_db = {
     "johndoe": {
@@ -27,19 +23,31 @@ fake_users_db = {
         "email": "alice@example.com",
         "hashed_password": "fakehashedsecret2",
         "disabled": True,
-        "roles": ["Read/Write"]
+        "roles": ["Read", "Write"]
     },
+    "bob": {
+        "username": "bob",
+        "full_name": "Bob Smith",
+        "email": "bob@example.com",
+        "hashed_password": "fakehashedsecret3",
+        "disabled": False,
+        "roles": ["Read", "Write"]
+    }
 }
 
 # Create the FastAPI app
 app = FastAPI()
 
-# Create the SQLite database engine
-engine = create_engine("sqlite:///phonebook.db", echo=True)
+# Define the SQLite database engine
+SQLALCHEMY_DATABASE_URL = "sqlite:///./phonebook.db"
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Create the base class for the database models
+# Create a database session class
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Base class for the database models
 Base = declarative_base()
 
 
@@ -51,20 +59,53 @@ class PhoneBook(Base):
     full_name = Column(String)
     phone_number = Column(String)
 
-    '''def __repr__(self):
-        return f"<PhoneBook(full_name={self.full_name}, last_name={self.last_name}, phone_number={self.phone_number})>" '''
+
+# Define the AuditLog model
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True)
+    action = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+# Function to log an action
+def log_action(db: Session, user_id: str, action: str):
+    # Create a new audit log entry
+    log_entry = AuditLog(user_id=user_id, action=action)
+    db.add(log_entry)
+    db.commit()
 
 
 def fake_hash_password(password: str):
     return "fakehashed" + password
 
 
+# Dependency to get the database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# Import models and functions from the previous code snippet
 class User(BaseModel):
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
     disabled: Optional[bool] = None
     roles: Optional[list] = None
+
+
+# Define a Pydantic model for AuditLog
+class AuditLogResponse(BaseModel):
+    id: int
+    user_id: str
+    action: str
+    timestamp: datetime
 
 
 class UserInDB(User):
@@ -118,9 +159,67 @@ async def get_current_active_user(
 
 
 # Define the API endpoints
+def convert_audit_log_to_dict(log: AuditLog) -> dict:
+    log_dict = log.__dict__.copy()
+    # Ensure user_id is a string
+    log_dict["user_id"] = str(log_dict["user_id"])
+    return log_dict
 
+
+@app.get("/audit/logs", response_model=List[AuditLogResponse])
+def get_audit_logs(
+        current_user: Annotated[User, Depends(get_current_active_user)],
+        db: Session = Depends(get_db),
+        user_id: Optional[str] = None,
+        from_date: Optional[datetime] = None,
+        to_date: Optional[datetime] = None,
+        last_n: Optional[int] = None,
+) -> List[AuditLogResponse]:
+    session = Session()
+    query = session.query(AuditLog)
+
+    # Check if the user has the required role
+    if "Read" not in current_user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action=f"Read Audit Log")
+
+    # Filter by user ID if provided
+    if user_id is not None:
+        query = query.filter(AuditLog.user_id == user_id)
+
+    # Filter by date range if from_date and to_date are provided
+    if from_date is not None:
+        query = query.filter(AuditLog.timestamp >= from_date)
+    if to_date is not None:
+        query = query.filter(AuditLog.timestamp <= to_date)
+
+    # Order by timestamp in descending order to get the latest logs first
+    query = query.order_by(AuditLog.timestamp.desc())
+
+    # Limit the number of logs returned if last_n is provided
+    if last_n is not None:
+        query = query.limit(last_n)
+
+    # Execute the query and fetch the logs
+    logs = query.all()
+    session.close()
+
+    # Convert AuditLog objects to dictionaries
+    logs_dict = [convert_audit_log_to_dict(log) for log in logs]
+
+    return logs_dict
+
+
+# Add auditing to the login endpoint
 @app.post("/token")
-async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+async def login(
+        form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+        db: Session = Depends(get_db)
+):
     user_dict = fake_users_db.get(form_data.username)
     if not user_dict:
         raise HTTPException(status_code=400, detail="Incorrect username or password")
@@ -129,22 +228,37 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
     if not hashed_password == user.hashed_password:
         raise HTTPException(status_code=400, detail="Incorrect username or password")
 
+    # Log the action
+    log_action(db=db, user_id=user.username, action="Login")
+
     return {"access_token": user.username, "token_type": "bearer"}
 
 
 @app.get("/users/me")
-async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
+async def read_users_me(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Session = Depends(get_db)
+):
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action="Read user details")
+
     return current_user
 
 
 @app.get("/PhoneBook/list")
-def list_phonebook(current_user: Annotated[User, Depends(get_current_active_user)]):
+def list_phonebook(
+        current_user: Annotated[User, Depends(get_current_active_user)],
+        db: Session = Depends(get_db)
+):
     # Check if the user has the required role
     if "Read" not in current_user.roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
         )
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action="List phonebook entries")
+
     # Get a new session
     session = Session()
     # Query all the records in the phonebook table
@@ -155,14 +269,22 @@ def list_phonebook(current_user: Annotated[User, Depends(get_current_active_user
     return phonebook
 
 
+# Add auditing to the add_person endpoint
 @app.post("/PhoneBook/add")
-def add_person(person: Person, current_user: Annotated[User, Depends(get_current_active_user)]):
+def add_person(
+        person: Person,
+        current_user: Annotated[User, Depends(get_current_active_user)],
+        db: Session = Depends(get_db)
+):
     # Check if the user has the required role
-    if "Read/Write" not in current_user.roles:
+    if "Write" not in current_user.roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
         )
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action=f"Add phonebook entry: {person.full_name}")
+
     # Get a new session
     session = Session()
     # Check if the person already exists in the database by phone number
@@ -181,8 +303,22 @@ def add_person(person: Person, current_user: Annotated[User, Depends(get_current
     return {"message": "Person added successfully"}
 
 
+# Add auditing to the delete_by_name endpoint
 @app.put("/PhoneBook/deleteByName")
-def delete_by_name(full_name: str):
+def delete_by_name(
+        full_name: str,
+        current_user: Annotated[User, Depends(get_current_active_user)],
+        db: Session = Depends(get_db)
+):
+    # Check if the user has the required role
+    if "Write" not in current_user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action=f"Delete phonebook entry by name: {full_name}")
+
     # Get a new session
     session = Session()
     # Query the person by name in the database
@@ -200,8 +336,22 @@ def delete_by_name(full_name: str):
     return {"message": "Person deleted successfully"}
 
 
+# Add auditing to the delete_by_number endpoint
 @app.put("/PhoneBook/deleteByNumber")
-def delete_by_number(phone_number: str):
+def delete_by_number(
+        phone_number: str,
+        current_user: Annotated[User, Depends(get_current_active_user)],
+        db: Session = Depends(get_db)
+):
+    # Check if the user has the required role
+    if "Write" not in current_user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action=f"Delete phonebook entry by number: {phone_number}")
+
     # Get a new session
     session = Session()
     # Query the person by phone number in the database
