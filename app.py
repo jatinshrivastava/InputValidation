@@ -27,14 +27,8 @@ fake_users_db = {
         "email": "alice@example.com",
         "hashed_password": "fakehashedsecret2",
         "disabled": True,
-        "roles": ["Read", "ReadWrite"]
+        "roles": ["Read/Write"]
     },
-}
-
-# Define roles and permissions
-ROLES_PERMISSIONS = {
-    "Read": ["list"],
-    "ReadWrite": ["list", "add", "remove"]
 }
 
 # Create the FastAPI app
@@ -118,7 +112,6 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
 async def get_current_active_user(
         current_user: Annotated[User, Depends(get_current_user)],
 ):
-    print(f'Current USer is : {current_user}')
     if current_user.disabled:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
@@ -140,14 +133,18 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
 
 
 @app.get("/users/me")
-async def read_users_me(
-        current_user: Annotated[User, Depends(get_current_active_user)],
-):
+async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
 
 
 @app.get("/PhoneBook/list")
-def list_phonebook():
+def list_phonebook(current_user: Annotated[User, Depends(get_current_active_user)]):
+    # Check if the user has the required role
+    if "Read" not in current_user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
     # Get a new session
     session = Session()
     # Query all the records in the phonebook table
@@ -159,7 +156,13 @@ def list_phonebook():
 
 
 @app.post("/PhoneBook/add")
-def add_person(person: Person):
+def add_person(person: Person, current_user: Annotated[User, Depends(get_current_active_user)]):
+    # Check if the user has the required role
+    if "Read/Write" not in current_user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
     # Get a new session
     session = Session()
     # Check if the person already exists in the database by phone number
