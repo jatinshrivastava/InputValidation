@@ -148,6 +148,26 @@ class Person(BaseModel):
         return values
 
 
+# Name Validator
+def validate_name(full_name):
+    print('validating name!')
+    full_name_pattern = r"^(?:[A-Za-z'-]+\s){1,2}[A-Za-z'-]+(?:,\s[A-Za-z'-]+(?:\s[A-Za-z'-]+)?)?$"
+
+    # Validate full_name
+    if not re.match(full_name_pattern, full_name):
+        raise ValueError("Invalid name format. Name must be in one of the following formats: <first middle last>, "
+                         "<first last>, or <last, first MI>.")
+
+
+# Name Validator
+def validate_number(phone_number):
+    phone_number_pattern = r"^(?:\+\d{1,2}\s*)?(?:\(?\d{3}\)?[-.\s]*)?\d{3}[-.\s]*\d{4}$"
+
+    # Validate phone_number
+    if not re.match(phone_number_pattern, phone_number):
+        raise ValueError("Invalid phone number format")
+
+
 def get_user(db, username: str):
     if username in db:
         user_dict = db[username]
@@ -294,7 +314,6 @@ def list_phonebook(
 # Add auditing to the add_person endpoint
 @app.post("/PhoneBook/add")
 def add_person(
-        # full_name: Person,
         name: str,
         phoneNumber: str,
         current_user: Annotated[User, Depends(get_current_active_user)],
@@ -308,7 +327,7 @@ def add_person(
         )
 
     try:
-        person = Person(name=name, phoneNumber=phoneNumber)
+        Person(name=name, phoneNumber=phoneNumber)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.errors()[0]["msg"]))
 
@@ -337,7 +356,7 @@ def add_person(
 # Add auditing to the delete_by_name endpoint
 @app.put("/PhoneBook/deleteByName")
 def delete_by_name(
-        full_name: str,
+        name: str,
         current_user: Annotated[User, Depends(get_current_active_user)],
         db: Session = Depends(get_db)
 ):
@@ -347,13 +366,16 @@ def delete_by_name(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
         )
-    # Log the action
-    log_action(db=db, user_id=current_user.username, action=f"Delete phonebook entry by name: {full_name}")
+
+    try:
+        validate_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.args[0]))
 
     # Get a new session
     session = Session()
     # Query the person by name in the database
-    person = session.query(PhoneBook).filter_by(full_name=full_name).first()
+    person = session.query(PhoneBook).filter_by(full_name=name).first()
     # If the person does not exist, raise an exception
     if not person:
         session.close()
@@ -363,6 +385,10 @@ def delete_by_name(
     session.commit()
     # Close the session
     session.close()
+
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action=f"Delete phonebook entry by name: {name}")
+
     # Return a success message
     return {"message": "Person deleted successfully"}
 
