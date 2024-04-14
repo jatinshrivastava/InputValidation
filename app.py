@@ -2,10 +2,9 @@ import re
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from flask_sqlalchemy.session import Session
-from pydantic import BaseModel, root_validator
+from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 from typing import Annotated, Optional, List
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import datetime
@@ -126,26 +125,6 @@ Session = sessionmaker(bind=engine)
 class Person(BaseModel):
     name: str
     phoneNumber: str
-
-    @root_validator
-    def validate_fields(cls, values):
-        full_name = values.get("name")
-        phone_number = values.get("phoneNumber")
-
-        # Define regex patterns
-        full_name_pattern = r"^(?:[A-Za-z'-]+\s){1,2}[A-Za-z'-]+(?:,\s[A-Za-z'-]+(?:\s[A-Za-z'-]+)?)?$"
-        phone_number_pattern = r"^(?:\+\d{1,2}\s*)?(?:\(?\d{3}\)?[-.\s]*)?\d{3}[-.\s]*\d{4}$"
-
-        # Validate full_name
-        if not re.match(full_name_pattern, full_name):
-            raise ValueError("Invalid name format. Name must be in one of the following formats: <first middle last>, "
-                             "<first last>, or <last, first MI>.")
-
-        # Validate phone_number
-        if not re.match(phone_number_pattern, phone_number):
-            raise ValueError("Invalid phone number format")
-
-        return values
 
 
 # Name Validator
@@ -314,8 +293,9 @@ def list_phonebook(
 # Add auditing to the add_person endpoint
 @app.post("/PhoneBook/add")
 def add_person(
-        name: str,
-        phoneNumber: str,
+        # name: str,
+        # phoneNumber: str,
+        person: Person,
         current_user: Annotated[User, Depends(get_current_active_user)],
         db: Session = Depends(get_db)
 ):
@@ -327,27 +307,28 @@ def add_person(
         )
 
     try:
-        Person(name=name, phoneNumber=phoneNumber)
+        validate_name(person.name)
+        validate_number(person.phoneNumber)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.errors()[0]["msg"]))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.args[0]))
 
     # Get a new session
     session = Session()
     # Check if the person already exists in the database by phone number
-    existing_person = session.query(PhoneBook).filter_by(phone_number=phoneNumber).first()
+    existing_person = session.query(PhoneBook).filter_by(phone_number=person.phoneNumber).first()
     # If the person exists, raise an exception
     if existing_person:
         session.close()
         raise HTTPException(status_code=400, detail="Person already exists in the database")
     # Otherwise, create a new PhoneBook record and add it to the database
-    new_person = PhoneBook(full_name=name, phone_number=phoneNumber)
+    new_person = PhoneBook(full_name=person.name, phone_number=person.phoneNumber)
     session.add(new_person)
     session.commit()
     # Close the session
     session.close()
 
     # Log the action
-    log_action(db=db, user_id=current_user.username, action=f"Add phonebook entry: {name}")
+    log_action(db=db, user_id=current_user.username, action=f"Add phonebook entry: {person.name}")
 
     # Return a success message
     return {"message": "Person added successfully"}
