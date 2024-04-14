@@ -396,7 +396,7 @@ def delete_by_name(
 # Add auditing to the delete_by_number endpoint
 @app.put("/PhoneBook/deleteByNumber")
 def delete_by_number(
-        phone_number: str,
+        number: str,
         current_user: Annotated[User, Depends(get_current_active_user)],
         db: Session = Depends(get_db)
 ):
@@ -406,13 +406,16 @@ def delete_by_number(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions"
         )
-    # Log the action
-    log_action(db=db, user_id=current_user.username, action=f"Delete phonebook entry by number: {phone_number}")
+
+    try:
+        validate_number(number)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.args[0]))
 
     # Get a new session
     session = Session()
     # Query the person by phone number in the database
-    person = session.query(PhoneBook).filter_by(phone_number=phone_number).first()
+    person = session.query(PhoneBook).filter_by(phone_number=number).first()
     # If the person does not exist, raise an exception
     if not person:
         session.close()
@@ -422,5 +425,9 @@ def delete_by_number(
     session.commit()
     # Close the session
     session.close()
+
+    # Log the action
+    log_action(db=db, user_id=current_user.username, action=f"Delete phonebook entry by number: {number}")
+
     # Return a success message
     return {"message": "Person deleted successfully"}
