@@ -129,7 +129,6 @@ class Person(BaseModel):
 
 # Name Validator
 def validate_name(full_name):
-    print('validating name!')
     full_name_pattern = r"^(?:[A-Za-z'-]+\s){1,2}[A-Za-z'-]+(?:,\s[A-Za-z'-]+(?:\s[A-Za-z'-]+)?)?$"
 
     # Validate full_name
