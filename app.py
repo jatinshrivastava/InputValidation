@@ -1,10 +1,9 @@
 import re
 
 from fastapi import Depends, FastAPI, HTTPException, status
-from flask_sqlalchemy.session import Session
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from typing import Annotated, Optional, List
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import datetime
